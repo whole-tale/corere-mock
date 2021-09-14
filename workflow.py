@@ -5,7 +5,6 @@ import tempfile
 import threading
 import time
 from hashlib import md5
-
 from pathlib import Path
 
 import sseclient
@@ -87,9 +86,6 @@ class Manuscript:
         """
         path needs to point to a directory with submission files
         """
-        if path is None:
-            path = Path(os.path.dirname(__file__)) / "example_submission"
-
         # upload path
         for fname in path.iterdir():
             self.gc.uploadFileToFolder(self.tale["workspaceId"], fname)
@@ -113,42 +109,37 @@ class Manuscript:
     def stop(self, instance):
         self.gc.delete(f"/instance/{instance['_id']}")
 
-    def download_submission(self, folder_id=None):
+    def download_submission(self, path, folder_id=None):
         if folder_id is None:
             folder_id = self.tale["workspaceId"]  # otherwise it should be version
-        with tempfile.TemporaryDirectory() as tmpdirname:
-            print("[*] Created temporary directory for submission", tmpdirname)
-            self.gc.downloadFolderRecursive(folder_id, tmpdirname)
-            print(
-                "[*] Comparing files pre/post execution "
-                "(ultimately can happen on the backend)"
-            )
-            new = Path(tmpdirname)
-            old = Path(__file__).parent / "example_submission"
 
-            new_files = set(_.name for _ in new.iterdir())
-            old_files = set(_.name for _ in old.iterdir())
+        self.gc.downloadFolderRecursive(folder_id, path)
 
-            if diff := new_files - old_files:
-                print("    New files:")
-                for name in diff:
-                    print(f"      -> {name}")
-            if diff := old_files - new_files:
-                print("    Removed files:")
-                for name in diff:
-                    print(f"      -> {name}")
-            for name in new_files & old_files:
-                new_sum = md5sum(new / name)
-                old_sum = md5sum(old / name)
-                if new_sum != old_sum:
-                    print(f"File {name} was modified!!! (md5sum differs)")
-        print("[*] Cleaning up...")
+    @staticmethod
+    def compare_submission(new, old):
+        new_files = set(_.name for _ in new.iterdir())
+        old_files = set(_.name for _ in old.iterdir())
+
+        if diff := new_files - old_files:
+            print("    New files:")
+            for name in diff:
+                print(f"      -> {name}")
+        if diff := old_files - new_files:
+            print("    Removed files:")
+            for name in diff:
+                print(f"      -> {name}")
+        for name in new_files & old_files:
+            new_sum = md5sum(new / name)
+            old_sum = md5sum(old / name)
+            if new_sum != old_sum:
+                print(f"File {name} was modified!!! (md5sum differs)")
 
 
 print("[*] Creating a new Manuscript")
 manuscript = Manuscript()
 print("[*] Creating submission and uploading data")
-manuscript.create_submission(name="Submission no. 1")
+path = Path(os.path.dirname(__file__)) / "example_submission"
+manuscript.create_submission(name="Submission no. 1", path=path)
 print("[*] Starting Jupyter notebook (this may take a while...)")
 binder = manuscript.run()
 print("----")
@@ -156,6 +147,13 @@ print(f"  Open your browser and go to: {binder['url']}")
 print("   Make sure to run 'run_me.ipynb'")
 input("   After you're done with notebook press Enter to continue...")
 manuscript.stop(binder)
-manuscript.download_submission()
+with tempfile.TemporaryDirectory() as tmpdirname:
+    print("[*] Created temporary directory for submission", path)
+    manuscript.download_submission(tmpdirname)
+    print(
+        "[*] Comparing files pre/post execution "
+        "(ultimately can happen on the backend)"
+    )
+    manuscript.compare_submission(Path(tmpdirname), path)
+print("[*] Cleaning up...")
 print("Press CTRL-C to exit")
-manuscript.sse_handler.join()

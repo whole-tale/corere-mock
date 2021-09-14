@@ -22,6 +22,7 @@ Usage
 
 .. code-block:: shell
 
+    . ./venv/bin/activate
     export GIRDER_API_KEY=...  # assumes you have girder.local running and created the key
     python workflow.py
 
