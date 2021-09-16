@@ -23,8 +23,15 @@ Usage
 .. code-block:: shell
 
     . ./venv/bin/activate
-    export GIRDER_API_KEY=...  # assumes you have girder.local running and created the key
+    export GIRDER_API_KEY=...  
     python workflow.py
+
+To obtain the `GIRDER_API_KEY`:
+
+* Go to https://girder.stage.wholetale.org/
+* Select Login > Globus
+* Select user menu > My Account > API Keys to generate an API key. You can also use the `/api_key` endpoint via Swagger Page https://girder.stage.wholetale.org/api/v1.
+
 
 Acknowledgements
 ================

@@ -62,7 +62,7 @@ class Manuscript:
     We are going to map Manuscript to Tale and Submission to Version.
     """
 
-    def __init__(self, api_url="https://girder.local.wholetale.org/api/v1"):
+    def __init__(self, api_url="https://girder.stage.wholetale.org/api/v1"):
         self.gc = GirderClient(apiUrl=api_url)
         self.gc.authenticate(apiKey=os.environ.get("GIRDER_API_KEY"))
         self.tale = self.create_tale()
