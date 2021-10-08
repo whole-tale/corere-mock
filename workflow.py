@@ -1,14 +1,37 @@
 import datetime
 import json
 import os
-import tempfile
+# import tempfile
 import threading
 import time
 from hashlib import md5
 from pathlib import Path
 
 import sseclient
-from girder_client import GirderClient
+from girder_client import GirderClient, HttpError
+
+
+editor = {
+   'login': 'editor',
+   'girderToken': ''
+}
+
+author = {
+   'login': 'author',
+   'girderToken': ''
+}
+
+verifier = {
+   'login': 'verifier',
+   'girderToken': ''
+}
+
+
+class AccessType:
+    NONE = -1
+    READ = 0
+    WRITE = 1
+    ADMIN = 2
 
 
 class InstanceStatus:
@@ -62,14 +85,69 @@ class Manuscript:
     We are going to map Manuscript to Tale and Submission to Version.
     """
 
-    def __init__(self, api_url="https://girder.stage.wholetale.org/api/v1"):
+    def __init__(self, api_url="https://girder.local.wholetale.org/api/v1"):
         self.gc = GirderClient(apiUrl=api_url)
-        self.gc.authenticate(apiKey=os.environ.get("GIRDER_API_KEY"))
-        self.tale = self.create_tale()
+
+    def set_token(self, girderToken):
+        self.gc.setToken(girderToken)
+
+    def listen_events(self):
         self.sse_handler = threading.Thread(
             target=event_listener, args=(self.gc,), daemon=False
         )
         self.sse_handler.start()
+
+    def get_user(self, login):
+        return self.gc.get("/user/", parameters={"text": login})[0]
+
+    def get_group(self, name):
+        groups = self.gc.get("/group/", parameters={"text": name})
+        if groups:
+            return groups[0]
+        else:
+            return None
+
+    def create_group(self, name):
+        group = self.get_group(name)
+        if not group:
+            group = self.gc.post("/group", parameters={"name": name, "public": "false"})
+
+        # Only needed if user is not the one who created the group,
+        # but in this example the editor creates the group
+        # user = self.get_user(user['login'])
+        # self.gc.post(f"/group/{group['_id']}/invitation",
+        #     parameters={"userId": user["_id"], "quiet": "true", "force": "true"})
+
+        return group
+
+    def set_access(self, level, user=None, group=None):
+        acls = self.gc.get("/tale/{}/access".format(self.tale["_id"]))
+
+        if user:
+            new_acl = {
+                'login': user['login'],
+                'level': level,
+                'id': str(user['_id']),
+                'flags': [],
+                'name': '%s %s' % (
+                    user['firstName'], user['lastName']
+                )
+            }
+
+            acls['users'].append(new_acl)
+
+        elif group:
+            new_acl = {
+                'id': group['_id'],
+                'name': group['name'],
+                'flags': [],
+                'level': level
+            }
+
+            acls['groups'].append(new_acl)
+
+        self.gc.put("/tale/{}/access".format(self.tale['_id']),
+            parameters={'access': json.dumps(acls)})
 
     def default_image(self):
         images = self.gc.get("/image", parameters={"text": "Jupyter"})
@@ -79,16 +157,18 @@ class Manuscript:
         if image is None:
             image = self.default_image()
 
-        tale = self.gc.post("/tale", json={"imageId": image["_id"], "dataSet": []})
-        return tale
+        self.tale = self.gc.post("/tale", json={"imageId": image["_id"], "dataSet": []})
+
+    def copy_tale(self):
+        self.original_tale = self.tale
+        self.tale = self.gc.post("/tale/{}/copy".format(self.tale["_id"]))
 
     def create_submission(self, name=None, path=None):
         """
         path needs to point to a directory with submission files
         """
-        # upload path
-        for fname in path.iterdir():
-            self.gc.uploadFileToFolder(self.tale["workspaceId"], fname)
+
+        self.gc.upload(path.as_posix(), parentId=self.tale["workspaceId"], dryRun=False)
 
         # Finalize an immutable "submission"
         parameters = {"taleId": self.tale["_id"]}
@@ -115,6 +195,12 @@ class Manuscript:
 
         self.gc.downloadFolderRecursive(folder_id, path)
 
+    def submit(self):
+        self.gc.put("/tale/{}/relinquish".format(self.tale["_id"]), jsonResp=False)
+
+    def test_access(self):
+        self.gc.get("/tale/{}".format(self.tale["_id"]))
+
     @staticmethod
     def compare_submission(new, old):
         new_files = set(_.name for _ in new.iterdir())
@@ -135,25 +221,76 @@ class Manuscript:
                 print(f"File {name} was modified!!! (md5sum differs)")
 
 
-print("[*] Creating a new Manuscript")
+print("[*] Creating a new Manuscript as Editor")
 manuscript = Manuscript()
+manuscript.set_token(editor['girderToken'])
+
+print("[*] Creating and assigning editors group")
+group = manuscript.create_group("Corere Editors")
+manuscript.create_tale()
+manuscript.set_access(AccessType.ADMIN, group=group)
+
+print("[*] Adding author {}".format(author['login']))
+manuscript.set_access(AccessType.WRITE, manuscript.get_user(author['login']))
+
+print("[*] Changing user to Author")
+manuscript.set_token(author['girderToken'])
+
 print("[*] Creating submission and uploading data")
 path = Path(os.path.dirname(__file__)) / "example_submission"
 manuscript.create_submission(name="Submission no. 1", path=path)
-print("[*] Starting Jupyter notebook (this may take a while...)")
+
+print("[*] Starting Author environment (this may take a while...)")
 binder = manuscript.run()
 print("----")
 print(f"  Open your browser and go to: {binder['url']}")
 print("   Make sure to run 'run_me.ipynb'")
 input("   After you're done with notebook press Enter to continue...")
+
+print("[*] Stopping environment (this may take a while...)")
 manuscript.stop(binder)
-with tempfile.TemporaryDirectory() as tmpdirname:
-    print("[*] Created temporary directory for submission", path)
-    manuscript.download_submission(tmpdirname)
-    print(
-        "[*] Comparing files pre/post execution "
-        "(ultimately can happen on the backend)"
-    )
-    manuscript.compare_submission(Path(tmpdirname), path)
-print("[*] Cleaning up...")
-print("Press CTRL-C to exit")
+
+print("[*] Finalizing submission (submit) as Author")
+try:
+    # Author relinquishes access to the tale
+    manuscript.submit()
+except HttpError as error:
+    # Right now GC doesn't handle 204 as success
+    if error.status != 204:
+        print("Unexpected response {}: ".format(error.status))
+
+print("[*] Confirm author no longer has access")
+try:
+    # Author gets a 403.
+    manuscript.test_access()
+except HttpError as error:
+    print("Error accessing manuscript: {}".format(error.status))
+
+print("[*] Adding verifier {}".format(verifier['login']))
+manuscript.set_token(editor['girderToken'])
+manuscript.set_access(AccessType.READ, manuscript.get_user(verifier['login']))
+
+print("[*] Changing user to Verifier")
+manuscript.set_token(verifier['girderToken'])
+new_tale = manuscript.copy_tale()
+
+print("[*] Starting Verifier environment (this may take a while...)")
+binder = manuscript.run()
+print("----")
+print(f"  Open your browser and go to: {binder['url']}")
+print("   Make sure to run 'run_me.ipynb'")
+input("   After you're done with notebook press Enter to continue...")
+
+print("[*] Stopping environment (this may take a while...)")
+manuscript.stop(binder)
+
+# with tempfile.TemporaryDirectory() as tmpdirname:
+#    print("[*] Created temporary directory for submission", path)
+#    manuscript.download_submission(tmpdirname)
+#    print(
+#        "[*] Comparing files pre/post execution "
+#        "(ultimately can happen on the backend)"
+#    )
+#    manuscript.compare_submission(Path(tmpdirname), path)
+# print("[*] Cleaning up...")
+# print("Press CTRL-C to exit")
